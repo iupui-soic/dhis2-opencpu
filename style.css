@@ -1,0 +1,14 @@
+body {
+  font-family: Arial, sans-serif;
+}
+
+#response-container {
+  margin-top: 20px;
+}
+
+#response-output {
+  white-space: pre-wrap;
+  background: #f4f4f4;
+  border: 1px solid #ddd;
+  padding: 10px;
+}

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DHIS2 Data Fetching App</title>
+  <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+<body>
+  <h1>DHIS2 Data Fetching App</h1>
+  <form id="request-form">
+    <label for="dataset-select">Dataset:</label>
+    <select id="dataset-select" multiple></select>
+    <br>
+    <br>
+    <br>
+
+    <label for="legend-select">Legends:</label>
+    <select id="legend-select" multiple></select>
+    <br>
+    <br>
+    <br>
+
+    <label for="data-element-select">Data Elements:</label>
+    <select id="data-element-select" multiple></select>
+    <br>
+    <br>
+    <br>
+
+    <label for="indicator-select">Indicators:</label>
+    <select id="indicator-select" multiple></select>
+    <br>
+    <br>
+    <br>
+
+    <label for="org-unit-select">Organisation Unit:</label>
+    <select id="org-unit-select" multiple></select>
+    <br>
+    <br>
+    <br>
+
+    <label for="from-date">From:</label>
+    <input type="date" id="from-date">
+    <label for="to-date">To:</label>
+    <input type="date" id="to-date">
+
+    <button type="button" onclick="fetchData()">Fetch Data</button>
+  </form>
+  <div id="response-container">
+    <h2>Response:</h2>
+    <pre id="response-output"></pre>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>
+
