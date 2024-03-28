@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <title>DHIS2 Data Fetching App</title>
   <link rel="stylesheet" type="text/css" href="style.css">
 </head>
+
 <body>
   <h1>DHIS2 Data Fetching App</h1>
   <form id="request-form">
@@ -44,11 +46,19 @@
 
     <button type="button" onclick="fetchData()">Fetch Data</button>
   </form>
+
+  <label for="codeInput">R Code:</label>
+  <textarea id="codeInput" rows="10" cols="50"></textarea>
+  <button id="runCode">Run R Code</button>
+
   <div id="response-container">
     <h2>Response:</h2>
     <pre id="response-output"></pre>
   </div>
+
+  <!-- <script src="main.js"></script> -->
+  <!-- <script src="script.js"></script>  -->
+
   <script src="main.js"></script>
 </body>
 </html>
-
