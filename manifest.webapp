@@ -1,19 +1,20 @@
 {
-  "version": "1.8",
-  "name": "OpenCPU",
-  "description": "An app to interact with OpenCPU for dataset information",
+  "version": "2.0.0",
+  "name": "OpenCPU Statistical Analysis",
+  "description": "Interactively explore DHIS2 data and run R statistical analysis in real time via OpenCPU, in an RStudio-like interface.",
   "launch_path": "index.html",
+  "appType": "APP",
   "icons": {
     "48": "icon.png"
   },
   "developer": {
-    "name": "Purkayastha Lab for Health Innovation",
-    "url": "https://plhi.lab.iupui.edu"
+    "name": "Shikhar Shukla",
+    "url": "https://github.com/Amorfati123/DHIS2---OpenCPU-App"
   },
   "default_locale": "en",
   "activities": {
     "dhis": {
-      "href": "http://149.165.238.109:8080/api/*"
+      "href": "*"
     }
   }
 }
