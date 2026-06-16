@@ -1,14 +1,186 @@
+/* RStudio-inspired layout for the DHIS2 × OpenCPU app. */
+:root {
+  --bg: #f3f4f6;
+  --pane-bg: #ffffff;
+  --border: #d7dbe0;
+  --head-bg: #eef0f3;
+  --accent: #4078c0;
+  --accent-dark: #2f5a94;
+  --text: #1f2329;
+  --muted: #6b7280;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--bg);
+}
+
 body {
-  font-family: Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
 
-#response-container {
-  margin-top: 20px;
+/* ---- Top bar ---- */
+#topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 14px;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand .logo {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 7px;
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 18px;
+}
+.brand .title { font-weight: 700; font-size: 15px; }
+.brand .subtitle { font-size: 11px; color: var(--muted); }
+
+.conn { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.conn label { color: var(--muted); }
+.conn input {
+  width: 280px; padding: 5px 8px; font-family: var(--mono); font-size: 12px;
+  border: 1px solid var(--border); border-radius: 5px;
+}
+.status { font-size: 12px; white-space: nowrap; }
+.status--ok { color: #1a8f4c; }
+.status--err { color: #c0392b; }
+.status--unknown { color: var(--muted); }
+
+/* ---- Buttons ---- */
+.btn {
+  font-size: 12px; padding: 5px 10px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: #fff; color: var(--text);
+}
+.btn:hover { background: var(--head-bg); }
+.btn:disabled { opacity: 0.55; cursor: default; }
+.btn--primary { background: var(--accent); color: #fff; border-color: var(--accent-dark); }
+.btn--primary:hover { background: var(--accent-dark); }
+
+/* ---- Grid ---- */
+#grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 8px;
+  padding: 8px;
+  min-height: 0;
 }
 
-#response-output {
-  white-space: pre-wrap;
-  background: #f4f4f4;
-  border: 1px solid #ddd;
-  padding: 10px;
+.pane {
+  display: flex; flex-direction: column;
+  background: var(--pane-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  min-height: 0; min-width: 0;
+}
+.pane-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 10px;
+  background: var(--head-bg);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.pane-title { font-size: 12px; font-weight: 600; color: #374151; }
+.pane-tools { display: flex; gap: 6px; }
+.pane-body { flex: 1 1 auto; overflow: auto; padding: 10px; min-height: 0; }
+
+/* ---- Editor ---- */
+.editor-wrap { flex: 1 1 auto; display: flex; overflow: hidden; min-height: 0; }
+#gutter {
+  margin: 0; padding: 10px 6px 10px 10px; text-align: right;
+  font-family: var(--mono); font-size: 13px; line-height: 1.5;
+  color: #9aa3ad; background: #fafbfc; border-right: 1px solid var(--border);
+  overflow: hidden; user-select: none; white-space: pre; min-width: 38px;
+}
+#editor {
+  flex: 1 1 auto; border: 0; resize: none; outline: none;
+  padding: 10px; font-family: var(--mono); font-size: 13px; line-height: 1.5;
+  color: var(--text); tab-size: 2; white-space: pre; overflow: auto;
+}
+
+/* ---- Console ---- */
+.console {
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
+  white-space: pre-wrap; word-break: break-word; background: #1e1e1e; color: #e6e6e6;
+}
+.console-cmd { color: #6fb3ff; }
+.console-err { color: #ff8585; }
+.console-muted { color: #9aa3ad; }
+
+/* ---- Plots ---- */
+.plots { background: #fff; text-align: center; }
+.plot-img {
+  max-width: 100%; height: auto; border: 1px solid var(--border);
+  border-radius: 4px; margin: 6px 0;
+}
+
+/* ---- Tabs (environment pane) ---- */
+.tabs { display: flex; gap: 4px; }
+.tab {
+  font-size: 12px; padding: 4px 10px; cursor: pointer;
+  background: transparent; border: 0; border-bottom: 2px solid transparent;
+  color: var(--muted);
+}
+.tab--active { color: var(--accent-dark); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-panel { display: none; }
+.tab-panel--active { display: block; }
+
+/* ---- DHIS2 data form ---- */
+.field { margin-bottom: 10px; display: flex; flex-direction: column; }
+.field label { font-size: 11px; font-weight: 600; color: #4b5563; margin-bottom: 3px; }
+.field select, .field input {
+  font-size: 12px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 5px;
+  font-family: var(--sans);
+}
+.field select[multiple] { font-family: var(--sans); }
+.field-row { display: flex; gap: 10px; }
+.field-row .field { flex: 1; }
+.field--btn { justify-content: flex-end; }
+.field--btn .btn { width: 100%; }
+.hint { color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+/* ---- Tables ---- */
+.data-preview { margin-top: 8px; }
+.preview-head { font-size: 11px; font-weight: 600; color: #4b5563; margin-bottom: 4px; }
+.preview-table, .env-table {
+  width: 100%; border-collapse: collapse; font-size: 11.5px;
+}
+.preview-table th, .preview-table td, .env-table th, .env-table td {
+  border: 1px solid var(--border); padding: 3px 6px; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;
+}
+.preview-table th, .env-table th { background: var(--head-bg); font-weight: 600; }
+.env-table code { font-family: var(--mono); }
+.env-empty td { color: var(--muted); font-style: italic; }
+
+/* ---- Status bar ---- */
+#statusbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 14px; font-size: 11px; color: var(--muted);
+  background: #fff; border-top: 1px solid var(--border); flex: 0 0 auto;
+}
+#statusbar .spacer { flex: 1; }
+
+/* Responsive: stack panes on narrow screens. */
+@media (max-width: 900px) {
+  #grid { grid-template-columns: 1fr; grid-template-rows: repeat(4, minmax(220px, 1fr)); overflow: auto; }
+  body { overflow: auto; }
+  .conn input { width: 180px; }
 }

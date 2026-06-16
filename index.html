@@ -1,64 +1,139 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
-  <title>DHIS2 Data Fetching App</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenCPU Statistical Analysis &middot; DHIS2</title>
   <link rel="stylesheet" type="text/css" href="style.css">
 </head>
-
 <body>
-  <h1>DHIS2 Data Fetching App</h1>
-  <form id="request-form">
-    <label for="dataset-select">Dataset:</label>
-    <select id="dataset-select" multiple></select>
-    <br>
-    <br>
-    <br>
+  <!-- ===== Top bar ===== -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo">R</span>
+      <div>
+        <div class="title">OpenCPU Statistical Analysis</div>
+        <div class="subtitle">DHIS2 &times; OpenCPU &mdash; interactive R analysis</div>
+      </div>
+    </div>
+    <div class="conn">
+      <label for="ocpu-url">OpenCPU server</label>
+      <input type="text" id="ocpu-url" spellcheck="false"
+             placeholder="https://cloud.opencpu.org/ocpu">
+      <button id="ocpu-test" class="btn">Test</button>
+      <span id="ocpu-status" class="status status--unknown" title="Connection status">&#9679; not tested</span>
+    </div>
+  </header>
 
-    <label for="legend-select">Legends:</label>
-    <select id="legend-select" multiple></select>
-    <br>
-    <br>
-    <br>
+  <!-- ===== RStudio-like 2x2 grid ===== -->
+  <main id="grid">
 
-    <label for="data-element-select">Data Elements:</label>
-    <select id="data-element-select" multiple></select>
-    <br>
-    <br>
-    <br>
+    <!-- Top-left: Source editor -->
+    <section class="pane" id="pane-source">
+      <div class="pane-head">
+        <span class="pane-title">Source</span>
+        <div class="pane-tools">
+          <button id="run-all" class="btn btn--primary" title="Run the whole script (Ctrl/Cmd+Enter)">&#9654; Run</button>
+          <button id="clear-editor" class="btn" title="Clear the editor">Clear</button>
+        </div>
+      </div>
+      <div class="editor-wrap">
+        <pre id="gutter" aria-hidden="true">1</pre>
+        <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off"
+                  placeholder="# Write R code here, then press Run (Ctrl/Cmd+Enter)&#10;# Datasets you load from DHIS2 appear in the Environment panel.&#10;summary(df)&#10;hist(df$value, main = 'DHIS2 values', col = 'steelblue')"></textarea>
+      </div>
+    </section>
 
-    <label for="indicator-select">Indicators:</label>
-    <select id="indicator-select" multiple></select>
-    <br>
-    <br>
-    <br>
+    <!-- Top-right: Environment / DHIS2 data -->
+    <section class="pane" id="pane-env">
+      <div class="pane-head">
+        <div class="tabs">
+          <button class="tab tab--active" data-tab="dhis">DHIS2 Data</button>
+          <button class="tab" data-tab="env">Environment</button>
+        </div>
+      </div>
 
-    <label for="org-unit-select">Organisation Unit:</label>
-    <select id="org-unit-select" multiple></select>
-    <br>
-    <br>
-    <br>
+      <!-- DHIS2 data browser -->
+      <div class="pane-body tab-panel tab-panel--active" id="tab-dhis">
+        <div class="field">
+          <label>Data items</label>
+          <select id="dx-select" multiple size="5"></select>
+          <small id="dx-hint" class="hint">Loading indicators from DHIS2&hellip;</small>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Period</label>
+            <select id="pe-select">
+              <option value="LAST_12_MONTHS">Last 12 months</option>
+              <option value="THIS_YEAR">This year</option>
+              <option value="LAST_YEAR">Last year</option>
+              <option value="LAST_5_YEARS">Last 5 years</option>
+              <option value="LAST_4_QUARTERS">Last 4 quarters</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Organisation unit</label>
+            <select id="ou-select"></select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>R variable name</label>
+            <input type="text" id="var-name" value="df" spellcheck="false">
+          </div>
+          <div class="field field--btn">
+            <button id="fetch-data" class="btn btn--primary">Fetch &amp; Load into R</button>
+          </div>
+        </div>
+        <div id="data-preview" class="data-preview">
+          <small class="hint">Select one or more data items and click <em>Fetch &amp; Load into R</em>. A preview appears here and the data becomes available to your R code.</small>
+        </div>
+      </div>
 
-    <label for="from-date">From:</label>
-    <input type="date" id="from-date">
-    <label for="to-date">To:</label>
-    <input type="date" id="to-date">
+      <!-- Loaded R objects -->
+      <div class="pane-body tab-panel" id="tab-env">
+        <table class="env-table">
+          <thead><tr><th>Name</th><th>Type</th><th>Details</th></tr></thead>
+          <tbody id="env-tbody">
+            <tr class="env-empty"><td colspan="3">No datasets loaded yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
-    <button type="button" onclick="fetchData()">Fetch Data</button>
-  </form>
+    <!-- Bottom-left: Console -->
+    <section class="pane" id="pane-console">
+      <div class="pane-head">
+        <span class="pane-title">Console</span>
+        <div class="pane-tools">
+          <button id="clear-console" class="btn">Clear</button>
+        </div>
+      </div>
+      <div class="pane-body console" id="console"></div>
+    </section>
 
-  <label for="codeInput">R Code:</label>
-  <textarea id="codeInput" rows="10" cols="50"></textarea>
-  <button id="runCode">Run R Code</button>
+    <!-- Bottom-right: Plots / Output -->
+    <section class="pane" id="pane-plots">
+      <div class="pane-head">
+        <span class="pane-title">Plots</span>
+        <div class="pane-tools">
+          <button id="clear-plots" class="btn">Clear</button>
+        </div>
+      </div>
+      <div class="pane-body plots" id="plots">
+        <small class="hint">Plots produced by your R code (e.g. <code>plot()</code>, <code>hist()</code>, <code>ggplot()</code>) appear here.</small>
+      </div>
+    </section>
+  </main>
 
-  <div id="response-container">
-    <h2>Response:</h2>
-    <pre id="response-output"></pre>
-  </div>
+  <footer id="statusbar">
+    <span id="dhis-status">Connecting to DHIS2&hellip;</span>
+    <span class="spacer"></span>
+    <span>Author: Shikhar Shukla</span>
+  </footer>
 
-  <!-- <script src="main.js"></script> -->
-  <!-- <script src="script.js"></script>  -->
-
-  <script src="main.js"></script>
+  <script src="dhis2.js"></script>
+  <script src="opencpu.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
