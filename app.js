@@ -1,320 +1,751 @@
 /*
- * app.js — UI wiring for the DHIS2 × OpenCPU statistical analysis app.
+ * app.js
+ * User interface for the DHIS2 and OpenCPU analysis app.
  *
  * Flow:
- *   1. Browser fetches data from DHIS2 (analytics API) using the user's session.
- *   2. Loaded datasets are turned into an R "preamble" that reconstructs them as
- *      data frames (data is base64-encoded, so no R/JSON escaping issues).
- *   3. The preamble + the user's editor code is sent to OpenCPU and executed.
- *   4. Console text and any plots are rendered RStudio-style.
+ *   1. The browser fetches data from DHIS2 using the logged in user's session.
+ *   2. Each loaded dataset becomes R code that rebuilds it (data is base64
+ *      encoded so there are no quoting problems).
+ *   3. That code, optional replay of earlier runs, and the editor code are sent
+ *      to OpenCPU and run.
+ *   4. Console text and plots are shown in the bottom panes.
  */
 (function () {
   'use strict';
 
-  const DEFAULT_OCPU = 'https://cloud.opencpu.org/ocpu';
-  const LS_KEY = 'dhis2-opencpu-url';
+  var DEFAULT_OCPU = 'https://cloud.opencpu.org/ocpu';
+  var LS_URL = 'dhis2-opencpu-url';
+  var LS_THEME = 'dhis2-opencpu-theme';
+  var LS_COL = 'dhis2-opencpu-col';
+  var LS_ROW = 'dhis2-opencpu-row';
+  var MAX_CONSOLE = 200000; // characters kept in the console
 
-  // In-memory "environment": varName -> { rows, nrow, ncol, label }
-  const datasets = {};
+  // Loaded objects, keyed by R variable name.
+  // Each entry is { kind: 'table'|'json', ... }.
+  var datasets = {};
+  // Code from earlier successful runs, used to rebuild the environment.
+  var historyCode = [];
+  // All commands ever run, for the History tab.
+  var historyAll = [];
+  // Installed packages on the server.
+  var allPackages = [];
+  // Selected organisation unit ids.
+  var selectedOu = {};
 
-  // ---- element shortcuts -------------------------------------------------
-  const $ = (id) => document.getElementById(id);
-  const editor = $('editor');
-  const gutter = $('gutter');
-  const consoleEl = $('console');
-  const plotsEl = $('plots');
-  const ocpuUrlInput = $('ocpu-url');
-  const ocpuStatus = $('ocpu-status');
+  function $(id) { return document.getElementById(id); }
+  var editor, gutter, consoleEl, plotsEl, ocpuUrlInput, ocpuStatus;
 
-  // =======================================================================
-  // OpenCPU server URL handling
-  // =======================================================================
+  // Theme
+
+  function applyTheme(theme) {
+    document.body.setAttribute('data-theme', theme);
+    $('theme-toggle').textContent = theme === 'dark' ? 'Light' : 'Dark';
+    localStorage.setItem(LS_THEME, theme);
+  }
+  function toggleTheme() {
+    applyTheme(document.body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  }
+
+  // OpenCPU server
+
   function initOcpuUrl() {
-    ocpuUrlInput.value = localStorage.getItem(LS_KEY) || DEFAULT_OCPU;
-    ocpuUrlInput.addEventListener('change', () => {
-      localStorage.setItem(LS_KEY, ocpuUrlInput.value.trim());
+    ocpuUrlInput.value = localStorage.getItem(LS_URL) || DEFAULT_OCPU;
+    ocpuUrlInput.addEventListener('change', function () {
+      localStorage.setItem(LS_URL, ocpuUrlInput.value.trim());
       setOcpuStatus('unknown', 'not tested');
     });
   }
-
   function setOcpuStatus(kind, label) {
     ocpuStatus.className = 'status status--' + kind;
-    ocpuStatus.textContent = '● ' + label;
+    ocpuStatus.textContent = label;
   }
-
   async function testOcpu() {
-    setOcpuStatus('unknown', 'testing…');
+    setOcpuStatus('unknown', 'testing...');
     try {
       await OpenCPU.test(ocpuUrlInput.value);
       setOcpuStatus('ok', 'connected');
     } catch (e) {
       setOcpuStatus('err', 'unreachable');
-      printConsole('OpenCPU connection failed: ' + e.message + '\n', 'err');
+      toast('OpenCPU not reachable: ' + e.message, 'err');
     }
   }
 
-  // =======================================================================
-  // Editor: line-number gutter, tab handling, run shortcut
-  // =======================================================================
+  // Editor
+
   function syncGutter() {
-    const lines = editor.value.split('\n').length || 1;
-    let out = '';
-    for (let i = 1; i <= lines; i++) out += i + '\n';
+    var lines = editor.value.split('\n').length || 1;
+    var out = '';
+    for (var i = 1; i <= lines; i++) out += i + '\n';
     gutter.textContent = out;
     gutter.scrollTop = editor.scrollTop;
   }
-
+  function currentLine() {
+    var v = editor.value, pos = editor.selectionStart;
+    var start = v.lastIndexOf('\n', pos - 1) + 1;
+    var end = v.indexOf('\n', pos);
+    if (end === -1) end = v.length;
+    return v.slice(start, end);
+  }
+  function selectedText() {
+    return editor.value.slice(editor.selectionStart, editor.selectionEnd);
+  }
+  function replaceSelection(text, caretOffset) {
+    var s = editor.selectionStart, e = editor.selectionEnd;
+    editor.value = editor.value.slice(0, s) + text + editor.value.slice(e);
+    var pos = s + (caretOffset == null ? text.length : caretOffset);
+    editor.selectionStart = editor.selectionEnd = pos;
+    syncGutter();
+  }
+  var PAIRS = { '(': ')', '[': ']', '{': '}' };
   function initEditor() {
     editor.addEventListener('input', syncGutter);
-    editor.addEventListener('scroll', () => { gutter.scrollTop = editor.scrollTop; });
-    editor.addEventListener('keydown', (e) => {
-      // Insert two spaces on Tab instead of moving focus.
+    editor.addEventListener('scroll', function () { gutter.scrollTop = editor.scrollTop; });
+    editor.addEventListener('keydown', function (e) {
       if (e.key === 'Tab') {
         e.preventDefault();
-        const s = editor.selectionStart, en = editor.selectionEnd;
-        editor.value = editor.value.slice(0, s) + '  ' + editor.value.slice(en);
-        editor.selectionStart = editor.selectionEnd = s + 2;
-        syncGutter();
+        replaceSelection('  ');
+        return;
       }
-      // Ctrl/Cmd+Enter runs the whole script.
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        runAll();
+        if (e.shiftKey) runCode(editor.value);
+        else runCode(selectedText() || currentLine());
+        return;
+      }
+      // Auto indent on Enter, keeping the current line's leading spaces.
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        var line = currentLine();
+        var indent = (line.match(/^\s*/) || [''])[0];
+        if (/\{\s*$/.test(line)) indent += '  ';
+        if (indent) { e.preventDefault(); replaceSelection('\n' + indent); }
+        return;
+      }
+      // Auto close brackets.
+      if (PAIRS[e.key] && editor.selectionStart === editor.selectionEnd) {
+        e.preventDefault();
+        replaceSelection(e.key + PAIRS[e.key], 1);
       }
     });
     syncGutter();
   }
 
-  // =======================================================================
-  // Console + plots rendering
-  // =======================================================================
+  // Console, plots, busy state
+
+  function setBusy(on) {
+    $('busy').classList.toggle('hidden', !on);
+    $('run-selection').disabled = on;
+    $('run-all').disabled = on;
+  }
   function printConsole(text, kind) {
-    const span = document.createElement('span');
+    var span = document.createElement('span');
     if (kind) span.className = 'console-' + kind;
     span.textContent = text;
     consoleEl.appendChild(span);
+    // Keep the console from growing without bound.
+    if (consoleEl.textContent.length > MAX_CONSOLE) {
+      while (consoleEl.firstChild && consoleEl.textContent.length > MAX_CONSOLE) {
+        consoleEl.removeChild(consoleEl.firstChild);
+      }
+    }
     consoleEl.scrollTop = consoleEl.scrollHeight;
   }
-
   function renderPlots(urls) {
     if (!urls.length) return;
-    const hint = plotsEl.querySelector('.hint');
+    var hint = plotsEl.querySelector('.hint');
     if (hint) hint.remove();
-    urls.forEach((u) => {
-      const img = new Image();
+    urls.forEach(function (u) {
+      var wrap = document.createElement('div');
+      wrap.className = 'plot-wrap';
+      var img = new Image();
       img.src = u;
       img.alt = 'R plot';
       img.className = 'plot-img';
-      plotsEl.appendChild(img);
+      var link = document.createElement('a');
+      link.href = u; link.target = '_blank'; link.rel = 'noopener';
+      link.textContent = 'Open full size'; link.className = 'plot-link';
+      wrap.appendChild(img); wrap.appendChild(link);
+      plotsEl.appendChild(wrap);
     });
     plotsEl.scrollTop = plotsEl.scrollHeight;
   }
 
-  // =======================================================================
-  // R preamble from loaded datasets
-  // =======================================================================
+  // Build R that recreates loaded objects.
   function buildPreamble() {
-    const names = Object.keys(datasets);
+    var names = Object.keys(datasets);
     if (!names.length) return '';
-    let r = '## --- DHIS2 data loaded by the app ---\n';
-    names.forEach((name) => {
-      const json = JSON.stringify(datasets[name].rows);
-      const b64 = OpenCPU.toBase64(json);
-      r += name + ' <- jsonlite::fromJSON(rawToChar(jsonlite::base64_dec("' + b64 + '")))\n';
-      r += 'if ("value" %in% names(' + name + ')) ' + name +
-           '$value <- suppressWarnings(as.numeric(' + name + '$value))\n';
+    var lines = ['# DHIS2 data loaded by the app'];
+    names.forEach(function (name) {
+      var d = datasets[name];
+      var json = d.kind === 'json' ? d.json : JSON.stringify(d.rows);
+      var b64 = OpenCPU.toBase64(json);
+      lines.push(name + ' <- jsonlite::fromJSON(rawToChar(jsonlite::base64_dec("' + b64 + '")))');
+      if (d.kind === 'table') {
+        lines.push('if ("value" %in% names(' + name + ')) ' + name +
+          '$value <- suppressWarnings(as.numeric(' + name + '$value))');
+      }
     });
-    r += '## --- end DHIS2 data ---\n';
-    return r;
+    return lines.join('\n') + '\n';
   }
 
-  // =======================================================================
-  // Run
-  // =======================================================================
-  let running = false;
-  async function runAll() {
-    if (running) return;
-    const code = editor.value;
-    if (!code.trim()) return;
-    running = true;
-    $('run-all').disabled = true;
+  // Build R that silently re runs earlier code, so objects persist between runs.
+  function buildReplay() {
+    if (!$('persist-env').checked || !historyCode.length) return '';
+    var b64 = OpenCPU.toBase64(historyCode.join('\n'));
+    return [
+      '# replay earlier code to rebuild the environment',
+      '.replay_src <- rawToChar(jsonlite::base64_dec("' + b64 + '"))',
+      'local({',
+      '  grDevices::pdf(NULL)',
+      '  on.exit(grDevices::dev.off(), add = TRUE)',
+      '  invisible(utils::capture.output(suppressWarnings(suppressMessages(',
+      '    eval(parse(text = .replay_src), envir = globalenv())',
+      '  ))))',
+      '})',
+      'rm(.replay_src)',
+      ''
+    ].join('\n');
+  }
 
-    printConsole('\n> Running…\n', 'cmd');
-    const fullScript = buildPreamble() + '\n' + code + '\n';
+  function hintForError(msg) {
+    var m = /there is no package called ['"]([^'"]+)['"]/i.exec(msg);
+    if (m) {
+      return '\nHint: package "' + m[1] + '" is not installed on this OpenCPU server. ' +
+        'See the Packages tab, or install it on your own server.';
+    }
+    if (/could not find function/i.test(msg)) {
+      return '\nHint: load the package first with library(), and make sure it is installed on the server.';
+    }
+    return '';
+  }
+
+  // Run
+
+  var running = false;
+  async function runCode(code) {
+    if (running || !code || !code.trim()) return;
+    running = true;
+    setBusy(true);
+    printConsole('\n> running...\n', 'cmd');
+    var fullScript = buildPreamble() + buildReplay() + '\n' + code + '\n';
     try {
-      const result = await OpenCPU.run(ocpuUrlInput.value, fullScript);
+      var result = await OpenCPU.run(ocpuUrlInput.value, fullScript);
       setOcpuStatus('ok', 'connected');
       if (result.console) printConsole(result.console);
-      if (result.error) printConsole(result.error + '\n', 'err');
+      if (result.error) printConsole(result.error + hintForError(result.error) + '\n', 'err');
       renderPlots(result.plots);
-      if (!result.console && !result.error && !result.plots.length) {
-        printConsole('(no output)\n', 'muted');
+      if (!result.console && !result.error && !result.plots.length) printConsole('(no output)\n', 'muted');
+      if (!result.error) {
+        if ($('persist-env').checked) historyCode.push(code);
+        addHistory(code);
       }
     } catch (e) {
       setOcpuStatus('err', 'unreachable');
       printConsole('Error: ' + e.message + '\n', 'err');
+      toast('Run failed: ' + e.message, 'err');
     } finally {
       running = false;
-      $('run-all').disabled = false;
+      setBusy(false);
     }
   }
 
-  // =======================================================================
+  // History tab
+
+  function addHistory(code) {
+    historyAll.unshift(code);
+    if (historyAll.length > 100) historyAll.pop();
+    renderHistory();
+  }
+  function renderHistory() {
+    var box = $('hist-list');
+    if (!historyAll.length) {
+      box.innerHTML = '<small class="hint">Code you run appears here. Click an entry to put it back in the editor.</small>';
+      return;
+    }
+    box.innerHTML = '';
+    historyAll.forEach(function (code) {
+      var div = document.createElement('div');
+      div.className = 'hist-item';
+      div.textContent = code.length > 120 ? code.slice(0, 120) + '...' : code;
+      div.title = 'Click to load into the editor';
+      div.addEventListener('click', function () {
+        var sep = editor.value && !/\n$/.test(editor.value) ? '\n' : '';
+        editor.value += sep + code + '\n';
+        syncGutter(); editor.focus();
+      });
+      box.appendChild(div);
+    });
+  }
+
   // DHIS2 data browser
-  // =======================================================================
+
   async function initDhis() {
     try {
-      const base = await DHIS2.resolveApiBase();
-      $('dhis-status').textContent = 'DHIS2 API: ' + base;
-
-      const [me, indicators, roots] = await Promise.all([
-        DHIS2.getMe().catch(() => null),
-        DHIS2.getIndicators().catch(() => []),
-        DHIS2.getRootOrgUnits().catch(() => []),
-      ]);
-
-      if (me) $('dhis-status').textContent += '  •  ' + (me.name || me.username || '');
-
-      const dx = $('dx-select');
-      dx.innerHTML = '';
-      indicators.forEach((it) => {
-        const o = document.createElement('option');
-        o.value = it.id;
-        o.textContent = it.displayName;
-        dx.appendChild(o);
-      });
-      $('dx-hint').textContent = indicators.length
-        ? indicators.length + ' indicators available (Ctrl/Cmd-click to multi-select).'
-        : 'No indicators returned. Check your DHIS2 connection/permissions.';
-
-      const ou = $('ou-select');
-      ou.innerHTML = '';
-      // Prefer the user's own org units; fall back to root org units.
-      const ouList = (me && me.organisationUnits && me.organisationUnits.length)
-        ? me.organisationUnits : roots;
-      ouList.forEach((u) => {
-        const o = document.createElement('option');
-        o.value = u.id;
-        o.textContent = u.displayName;
-        ou.appendChild(o);
-      });
+      var base = await DHIS2.resolveApiBase();
+      $('dhis-status').textContent = 'DHIS2: ' + base;
+      var me = await DHIS2.getMe().catch(function () { return null; });
+      if (me) $('dhis-status').textContent += '  ' + (me.name || me.username || '');
+      await searchDataItems();
+      await loadOrgRoots();
     } catch (e) {
       $('dhis-status').textContent = 'DHIS2 connection failed: ' + e.message;
+      toast('DHIS2 connection failed: ' + e.message, 'err');
     }
+  }
+
+  var searchTimer = null;
+  function scheduleSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(searchDataItems, 300);
+  }
+  async function searchDataItems() {
+    var type = $('dx-type').value;
+    var q = $('dx-search').value;
+    $('dx-hint').textContent = 'Searching...';
+    try {
+      var items = await DHIS2.searchDataItems(type, q);
+      var sel = $('dx-select');
+      sel.innerHTML = '';
+      items.forEach(function (it) {
+        var o = document.createElement('option');
+        o.value = it.dxId;
+        o.textContent = it.name;
+        sel.appendChild(o);
+      });
+      $('dx-hint').textContent = items.length
+        ? items.length + ' shown. Refine the search to find more. Ctrl/Cmd click for multiple.'
+        : 'Nothing found. Try a different search.';
+    } catch (e) {
+      $('dx-hint').textContent = 'Search failed: ' + e.message;
+    }
+  }
+
+  // Organisation unit tree
+
+  async function loadOrgRoots() {
+    var box = $('ou-tree');
+    box.innerHTML = '';
+    try {
+      var roots = await DHIS2.getRootOrgUnits();
+      roots.forEach(function (u) { box.appendChild(makeOuNode(u)); });
+      if (!roots.length) box.textContent = 'No organisation units available.';
+    } catch (e) {
+      box.textContent = 'Could not load org units: ' + e.message;
+    }
+  }
+  function makeOuNode(u) {
+    var node = document.createElement('div');
+    node.className = 'ou-node';
+    var row = document.createElement('div');
+    row.className = 'ou-row';
+
+    var toggle = document.createElement('span');
+    toggle.className = 'ou-toggle';
+    toggle.textContent = u.children ? '+' : '';
+    var children = document.createElement('div');
+    children.className = 'ou-children hidden';
+    var loaded = false;
+    toggle.addEventListener('click', async function () {
+      if (!u.children) return;
+      if (!loaded) {
+        toggle.textContent = '.';
+        try {
+          var kids = await DHIS2.getChildOrgUnits(u.id);
+          kids.forEach(function (k) { children.appendChild(makeOuNode(k)); });
+          loaded = true;
+        } catch (e) { toast('Could not load sub units: ' + e.message, 'err'); }
+      }
+      var hidden = children.classList.toggle('hidden');
+      toggle.textContent = hidden ? '+' : '-';
+    });
+
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.addEventListener('change', function () {
+      if (cb.checked) selectedOu[u.id] = u.displayName;
+      else delete selectedOu[u.id];
+      renderOuSelected();
+    });
+
+    var label = document.createElement('span');
+    label.className = 'ou-label';
+    label.textContent = u.displayName;
+    label.addEventListener('click', function () { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); });
+
+    row.appendChild(toggle); row.appendChild(cb); row.appendChild(label);
+    node.appendChild(row); node.appendChild(children);
+    return node;
+  }
+  function renderOuSelected() {
+    var names = Object.keys(selectedOu).map(function (id) { return selectedOu[id]; });
+    $('ou-selected').textContent = names.length ? 'Selected: ' + names.join(', ') : 'None selected.';
+  }
+
+  function chosenPeriods() {
+    var custom = $('pe-custom').value.trim();
+    return custom || $('pe-select').value;
   }
 
   async function fetchData() {
-    const dxSel = $('dx-select');
-    const dx = Array.from(dxSel.selectedOptions).map((o) => o.value);
-    const pe = $('pe-select').value;
-    const ou = $('ou-select').value;
-    const varName = ($('var-name').value || 'df').trim().replace(/[^A-Za-z0-9_.]/g, '_');
+    var dx = Array.prototype.slice.call($('dx-select').selectedOptions).map(function (o) { return o.value; });
+    var ou = Object.keys(selectedOu);
+    var pe = chosenPeriods();
+    var disagg = $('dx-disagg').checked;
+    var varName = cleanName($('var-name').value, 'df');
 
-    if (!dx.length) { alert('Select at least one data item.'); return; }
-    if (!ou) { alert('No organisation unit available.'); return; }
+    if (!dx.length) { toast('Select at least one data item.', 'err'); return; }
+    if (!ou.length) { toast('Select at least one organisation unit.', 'err'); return; }
 
-    const preview = $('data-preview');
-    preview.innerHTML = '<small class="hint">Fetching from DHIS2…</small>';
+    var preview = $('data-preview');
+    preview.innerHTML = '<small class="hint">Fetching from DHIS2...</small>';
     $('fetch-data').disabled = true;
     try {
-      const analytics = await DHIS2.getAnalytics(dx, pe, ou);
-      const rows = DHIS2.analyticsToRows(analytics);
+      var analytics = await DHIS2.getAnalytics(dx, pe, ou.join(';'), disagg);
+      var rows = DHIS2.analyticsToRows(analytics);
+      var skipped = (analytics._failed || []).length;
       if (!rows.length) {
-        preview.innerHTML = '<small class="hint">Query returned no data for that selection.</small>';
+        preview.innerHTML = '<small class="hint">No data for that selection.</small>';
+        if (skipped) toast('All ' + skipped + ' item(s) returned no data.', 'err');
         return;
       }
-      const cols = Object.keys(rows[0]);
-      datasets[varName] = { rows, nrow: rows.length, ncol: cols.length, cols };
+      var cols = Object.keys(rows[0]);
+      datasets[varName] = { kind: 'table', rows: rows, nrow: rows.length, ncol: cols.length, cols: cols };
       renderPreview(varName, rows, cols);
       renderEnv();
-      printConsole('Loaded "' + varName + '" (' + rows.length + ' rows) from DHIS2.\n', 'muted');
+      var msg = 'Loaded "' + varName + '" (' + rows.length + ' rows).';
+      if (skipped) msg += ' Skipped ' + skipped + ' item(s) with no data.';
+      toast(msg, 'ok');
+      printConsole(msg + '\n', 'muted');
     } catch (e) {
       preview.innerHTML = '<small class="hint">Fetch failed: ' + escapeHtml(e.message) + '</small>';
+      toast('Fetch failed: ' + e.message, 'err');
     } finally {
       $('fetch-data').disabled = false;
     }
   }
 
-  function renderPreview(varName, rows, cols) {
-    const max = 10;
-    let html = '<div class="preview-head">' + escapeHtml(varName) + ' &mdash; ' +
-      rows.length + ' rows &times; ' + cols.length + ' cols</div>';
-    html += '<table class="preview-table"><thead><tr>';
-    cols.forEach((c) => { html += '<th>' + escapeHtml(c) + '</th>'; });
-    html += '</tr></thead><tbody>';
-    rows.slice(0, max).forEach((r) => {
-      html += '<tr>';
-      cols.forEach((c) => { html += '<td>' + escapeHtml(String(r[c] == null ? '' : r[c])) + '</td>'; });
-      html += '</tr>';
-    });
-    html += '</tbody></table>';
-    if (rows.length > max) html += '<small class="hint">Showing first ' + max + ' rows.</small>';
-    $('data-preview').innerHTML = html;
+  async function fetchRaw() {
+    var path = $('raw-path').value.trim();
+    var varName = cleanName($('raw-var').value, 'meta');
+    if (!path) { toast('Enter an API path.', 'err'); return; }
+    $('raw-fetch').disabled = true;
+    try {
+      var obj = await DHIS2.rawApi(path);
+      datasets[varName] = { kind: 'json', json: JSON.stringify(obj), summary: 'JSON from ' + path };
+      renderEnv();
+      $('data-preview').innerHTML = '<div class="preview-head">' + escapeHtml(varName) +
+        '</div><pre class="json-preview">' + escapeHtml(JSON.stringify(obj, null, 2).slice(0, 4000)) + '</pre>';
+      toast('Loaded JSON into "' + varName + '".', 'ok');
+    } catch (e) {
+      toast('Load failed: ' + e.message, 'err');
+    } finally {
+      $('raw-fetch').disabled = false;
+    }
   }
 
+  function renderPreview(varName, rows, cols) {
+    var max = 12;
+    var html = '<div class="preview-head">' + escapeHtml(varName) + ', ' +
+      rows.length + ' rows by ' + cols.length + ' cols</div>';
+    html += tableHtml(rows.slice(0, max), cols);
+    if (rows.length > max) html += '<small class="hint">First ' + max + ' rows. Use View in Environment for all.</small>';
+    $('data-preview').innerHTML = html;
+  }
+  function tableHtml(rows, cols) {
+    var html = '<table class="data-table"><thead><tr>';
+    cols.forEach(function (c) { html += '<th>' + escapeHtml(c) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      html += '<tr>';
+      cols.forEach(function (c) { html += '<td>' + escapeHtml(String(r[c] == null ? '' : r[c])) + '</td>'; });
+      html += '</tr>';
+    });
+    return html + '</tbody></table>';
+  }
+
+  // Environment
+
   function renderEnv() {
-    const tbody = $('env-tbody');
-    const names = Object.keys(datasets);
+    var tbody = $('env-tbody');
+    var names = Object.keys(datasets);
     if (!names.length) {
-      tbody.innerHTML = '<tr class="env-empty"><td colspan="3">No datasets loaded yet.</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="3">No data loaded yet.</td></tr>';
       return;
     }
     tbody.innerHTML = '';
-    names.forEach((n) => {
-      const d = datasets[n];
-      const tr = document.createElement('tr');
-      tr.innerHTML = '<td><code>' + escapeHtml(n) + '</code></td>' +
-        '<td>data.frame</td>' +
-        '<td>' + d.nrow + ' obs. of ' + d.ncol + ' variables</td>';
+    names.forEach(function (n) {
+      var d = datasets[n];
+      var details = d.kind === 'table' ? (d.nrow + ' obs. of ' + d.ncol + ' vars') : (d.summary || 'JSON object');
+      var actions = '<button class="link-btn" data-view="' + escapeHtml(n) + '">View</button>';
+      if (d.kind === 'table') actions += ' <button class="link-btn" data-csv="' + escapeHtml(n) + '">CSV</button>';
+      actions += ' <button class="link-btn" data-del="' + escapeHtml(n) + '">Remove</button>';
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td><code>' + escapeHtml(n) + '</code></td><td>' + details + '</td><td>' + actions + '</td>';
       tbody.appendChild(tr);
     });
+    bindEnvActions();
+  }
+  function bindEnvActions() {
+    var tbody = $('env-tbody');
+    tbody.querySelectorAll('[data-view]').forEach(function (b) {
+      b.addEventListener('click', function () { openViewer(b.getAttribute('data-view')); });
+    });
+    tbody.querySelectorAll('[data-csv]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var n = b.getAttribute('data-csv');
+        downloadCsv(n + '.csv', datasets[n].rows, datasets[n].cols);
+      });
+    });
+    tbody.querySelectorAll('[data-del]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        delete datasets[b.getAttribute('data-del')];
+        renderEnv();
+      });
+    });
+  }
+  function restart() {
+    datasets = {};
+    historyCode = [];
+    renderEnv();
+    $('data-preview').innerHTML = '<small class="hint">Environment cleared.</small>';
+    printConsole('R environment restarted.\n', 'muted');
+    toast('R environment restarted.', 'ok');
   }
 
+  // Data viewer
+
+  function openViewer(name) {
+    var d = datasets[name];
+    if (!d) return;
+    if (d.kind === 'table') {
+      $('viewer-title').textContent = name + ', ' + d.nrow + ' rows by ' + d.ncol + ' cols';
+      $('viewer-body').innerHTML = tableHtml(d.rows, d.cols);
+      $('viewer-csv').classList.remove('hidden');
+      $('viewer-csv').onclick = function () { downloadCsv(name + '.csv', d.rows, d.cols); };
+    } else {
+      $('viewer-title').textContent = name + ' (JSON)';
+      $('viewer-body').innerHTML = '<pre class="json-preview">' +
+        escapeHtml(JSON.stringify(JSON.parse(d.json), null, 2)) + '</pre>';
+      $('viewer-csv').classList.add('hidden');
+    }
+    $('viewer').classList.remove('hidden');
+  }
+  function closeViewer() { $('viewer').classList.add('hidden'); }
+
+  // Packages
+
+  async function loadPackages() {
+    $('pkg-hint').textContent = 'Loading...';
+    try {
+      allPackages = await OpenCPU.listPackages(ocpuUrlInput.value);
+      renderPackages();
+    } catch (e) {
+      $('pkg-hint').textContent = 'Could not load packages: ' + e.message;
+      $('pkg-list').innerHTML = '';
+    }
+  }
+  function renderPackages() {
+    var f = $('pkg-filter').value.trim().toLowerCase();
+    var list = allPackages.filter(function (p) { return !f || p.toLowerCase().indexOf(f) !== -1; });
+    $('pkg-hint').textContent = allPackages.length + ' installed, ' + list.length + ' shown.';
+    $('pkg-list').innerHTML = list.map(function (p) {
+      return '<span class="pkg-item">' + escapeHtml(p) + '</span>';
+    }).join('');
+  }
+  async function installPackage() {
+    var name = $('pkg-install-name').value.trim();
+    if (!name) { toast('Enter a package name.', 'err'); return; }
+    $('pkg-install').disabled = true;
+    printConsole('Installing "' + name + '"...\n', 'muted');
+    try {
+      await OpenCPU.installPackage(ocpuUrlInput.value, name);
+      toast('Installed "' + name + '".', 'ok');
+      await loadPackages();
+    } catch (e) {
+      printConsole('Install failed: ' + e.message + '\n', 'err');
+      toast('Install failed. The server may be read only.', 'err');
+    } finally {
+      $('pkg-install').disabled = false;
+    }
+  }
+
+  // Examples
+
+  var EXAMPLES = {
+    summary: 'summary(df)\nstr(df)',
+    aggregate: 'aggregate(value ~ period, data = df, FUN = sum)',
+    trend: 'agg <- aggregate(value ~ period, data = df, FUN = sum)\nplot(factor(agg$period), agg$value, type = "b", xlab = "period", ylab = "value", main = "Trend")',
+    hist: 'hist(df$value, col = "steelblue", main = "Distribution of values", xlab = "value")',
+    bar: 'agg <- aggregate(value ~ period, data = df, FUN = sum)\nbarplot(agg$value, names.arg = agg$period, las = 2, col = "steelblue", main = "Total by period")',
+    lm: 'df$t <- as.numeric(factor(df$period))\nmodel <- lm(value ~ t, data = df)\nsummary(model)',
+    forecast: '# needs the forecast package on the server\nlibrary(forecast)\nagg <- aggregate(value ~ period, data = df, FUN = sum)\nts_data <- ts(agg$value, frequency = 12)\nfit <- auto.arima(ts_data)\nf <- forecast(fit, h = 6)\nprint(f)\nplot(f)',
+    outlier: 'v <- df$value\nb <- boxplot.stats(v)\ncat("Outliers:\\n")\nprint(b$out)\nboxplot(v, main = "Values with outliers", col = "steelblue")',
+    cor: 'num <- df[sapply(df, is.numeric)]\nif (ncol(num) >= 2) print(cor(num, use = "complete.obs")) else cat("Need at least two numeric columns.\\n")'
+  };
+  function insertExample(key) {
+    var s = EXAMPLES[key];
+    if (!s) return;
+    var sep = editor.value && !/\n$/.test(editor.value) ? '\n' : '';
+    editor.value += sep + s + '\n';
+    syncGutter(); editor.focus();
+  }
+
+  // Script save and open
+
+  function saveScript() {
+    downloadText('analysis.R', editor.value || '', 'text/plain');
+  }
+  function openScript(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      editor.value = String(reader.result || '');
+      syncGutter();
+      toast('Loaded ' + file.name, 'ok');
+    };
+    reader.readAsText(file);
+  }
+
+  // Helpers
+
+  function cleanName(v, fallback) {
+    var n = (v || '').trim().replace(/[^A-Za-z0-9_.]/g, '_');
+    return n || fallback;
+  }
   function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function rowsToCsv(rows, cols) {
+    function cell(v) {
+      var s = v == null ? '' : String(v);
+      if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    }
+    var out = cols.map(cell).join(',') + '\n';
+    rows.forEach(function (r) { out += cols.map(function (c) { return cell(r[c]); }).join(',') + '\n'; });
+    return out;
+  }
+  function downloadText(filename, text, type) {
+    var blob = new Blob([text], { type: type || 'text/plain' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function downloadCsv(filename, rows, cols) {
+    downloadText(filename, rowsToCsv(rows, cols), 'text/csv');
+  }
+  function toast(message, kind) {
+    var box = $('toasts');
+    var t = document.createElement('div');
+    t.className = 'toast toast--' + (kind || 'ok');
+    t.textContent = message;
+    box.appendChild(t);
+    setTimeout(function () { t.classList.add('toast--out'); }, 4000);
+    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 4500);
   }
 
-  // =======================================================================
   // Tabs
-  // =======================================================================
+
   function initTabs() {
-    document.querySelectorAll('.tab').forEach((tab) => {
-      tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach((t) => t.classList.remove('tab--active'));
-        document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('tab-panel--active'));
+    document.querySelectorAll('.tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        document.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('tab--active'); });
+        document.querySelectorAll('.tab-panel').forEach(function (p) { p.classList.remove('tab-panel--active'); });
         tab.classList.add('tab--active');
         $('tab-' + tab.dataset.tab).classList.add('tab-panel--active');
+        if (tab.dataset.tab === 'pkg' && !allPackages.length) loadPackages();
       });
     });
   }
 
-  // =======================================================================
+  // Resizable splitters
+
+  function initSplitters() {
+    var grid = $('grid');
+    var col = localStorage.getItem(LS_COL);
+    var row = localStorage.getItem(LS_ROW);
+    if (col) grid.style.setProperty('--c1', col);
+    if (row) grid.style.setProperty('--r1', row);
+
+    dragSplitter($('split-col'), function (e, rect) {
+      var w = Math.min(Math.max(e.clientX - rect.left, 220), rect.width - 220);
+      grid.style.setProperty('--c1', w + 'px');
+      localStorage.setItem(LS_COL, w + 'px');
+    });
+    dragSplitter($('split-row'), function (e, rect) {
+      var h = Math.min(Math.max(e.clientY - rect.top, 120), rect.height - 120);
+      grid.style.setProperty('--r1', h + 'px');
+      localStorage.setItem(LS_ROW, h + 'px');
+    });
+  }
+  function dragSplitter(handle, onMove) {
+    var grid = $('grid');
+    handle.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      var rect = grid.getBoundingClientRect();
+      function move(ev) { onMove(ev, rect); }
+      function up(ev) {
+        handle.releasePointerCapture(e.pointerId);
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+      }
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+    });
+  }
+
   // Boot
-  // =======================================================================
+
   function init() {
+    editor = $('editor');
+    gutter = $('gutter');
+    consoleEl = $('console');
+    plotsEl = $('plots');
+    ocpuUrlInput = $('ocpu-url');
+    ocpuStatus = $('ocpu-status');
+
+    applyTheme(localStorage.getItem(LS_THEME) || 'light');
     initOcpuUrl();
     initEditor();
     initTabs();
+    initSplitters();
 
+    $('theme-toggle').addEventListener('click', toggleTheme);
     $('ocpu-test').addEventListener('click', testOcpu);
-    $('run-all').addEventListener('click', runAll);
-    $('clear-editor').addEventListener('click', () => { editor.value = ''; syncGutter(); });
-    $('clear-console').addEventListener('click', () => { consoleEl.innerHTML = ''; });
-    $('clear-plots').addEventListener('click', () => {
-      plotsEl.innerHTML = '<small class="hint">Plots produced by your R code appear here.</small>';
-    });
-    $('fetch-data').addEventListener('click', fetchData);
+    $('run-selection').addEventListener('click', function () { runCode(selectedText() || currentLine()); });
+    $('run-all').addEventListener('click', function () { runCode(editor.value); });
+    $('restart').addEventListener('click', restart);
+    $('save-script').addEventListener('click', saveScript);
+    $('open-script').addEventListener('click', function () { $('open-file').click(); });
+    $('open-file').addEventListener('change', function () { if (this.files[0]) openScript(this.files[0]); this.value = ''; });
+    $('examples').addEventListener('change', function () { insertExample(this.value); this.value = ''; });
 
-    printConsole('OpenCPU R console ready. Load DHIS2 data, write R, press Run.\n', 'muted');
+    $('clear-console').addEventListener('click', function () { consoleEl.innerHTML = ''; });
+    $('download-console').addEventListener('click', function () { downloadText('console.txt', consoleEl.textContent || ''); });
+    $('clear-plots').addEventListener('click', function () {
+      plotsEl.innerHTML = '<small class="hint">Plots from your R code appear here.</small>';
+    });
+
+    $('dx-type').addEventListener('change', searchDataItems);
+    $('dx-search').addEventListener('input', scheduleSearch);
+    $('fetch-data').addEventListener('click', fetchData);
+    $('raw-fetch').addEventListener('click', fetchRaw);
+
+    $('pkg-filter').addEventListener('input', renderPackages);
+    $('pkg-install').addEventListener('click', installPackage);
+    $('clear-hist').addEventListener('click', function () { historyAll = []; renderHistory(); });
+
+    $('viewer-close').addEventListener('click', closeViewer);
+    $('viewer').addEventListener('click', function (e) { if (e.target === $('viewer')) closeViewer(); });
+
+    printConsole('Ready. Load DHIS2 data, write R, press Run.\n', 'muted');
     initDhis();
     testOcpu();
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 })();

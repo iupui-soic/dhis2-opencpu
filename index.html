@@ -3,134 +3,256 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenCPU Statistical Analysis &middot; DHIS2</title>
+  <title>OpenCPU Statistical Analysis for DHIS2</title>
   <link rel="stylesheet" type="text/css" href="style.css">
 </head>
 <body>
-  <!-- ===== Top bar ===== -->
+  <!-- Top bar -->
   <header id="topbar">
     <div class="brand">
       <span class="logo">R</span>
       <div>
         <div class="title">OpenCPU Statistical Analysis</div>
-        <div class="subtitle">DHIS2 &times; OpenCPU &mdash; interactive R analysis</div>
+        <div class="subtitle">Interactive R analysis on DHIS2 data</div>
       </div>
     </div>
-    <div class="conn">
-      <label for="ocpu-url">OpenCPU server</label>
-      <input type="text" id="ocpu-url" spellcheck="false"
-             placeholder="https://cloud.opencpu.org/ocpu">
-      <button id="ocpu-test" class="btn">Test</button>
-      <span id="ocpu-status" class="status status--unknown" title="Connection status">&#9679; not tested</span>
+    <div class="topbar-right">
+      <div class="conn">
+        <label for="ocpu-url">OpenCPU server</label>
+        <input type="text" id="ocpu-url" spellcheck="false" placeholder="https://cloud.opencpu.org/ocpu">
+        <button id="ocpu-test" class="btn">Test</button>
+        <span id="ocpu-status" class="status status--unknown">not tested</span>
+      </div>
+      <button id="theme-toggle" class="btn btn--icon" title="Toggle light or dark theme">Dark</button>
     </div>
   </header>
 
-  <!-- ===== RStudio-like 2x2 grid ===== -->
+  <!-- Four pane workspace -->
   <main id="grid">
 
-    <!-- Top-left: Source editor -->
+    <!-- Source editor -->
     <section class="pane" id="pane-source">
       <div class="pane-head">
         <span class="pane-title">Source</span>
         <div class="pane-tools">
-          <button id="run-all" class="btn btn--primary" title="Run the whole script (Ctrl/Cmd+Enter)">&#9654; Run</button>
-          <button id="clear-editor" class="btn" title="Clear the editor">Clear</button>
+          <select id="examples" class="select-sm" title="Insert an example snippet">
+            <option value="">Examples</option>
+            <option value="summary">Summary statistics</option>
+            <option value="aggregate">Aggregate by period</option>
+            <option value="trend">Trend line plot</option>
+            <option value="hist">Histogram</option>
+            <option value="bar">Bar chart by period</option>
+            <option value="lm">Linear regression</option>
+            <option value="forecast">Time series forecast</option>
+            <option value="outlier">Outlier detection</option>
+            <option value="cor">Correlation matrix</option>
+          </select>
+          <button id="run-selection" class="btn btn--primary" title="Run selection or current line (Ctrl/Cmd+Enter)">Run</button>
+          <button id="run-all" class="btn" title="Run the whole script (Ctrl/Cmd+Shift+Enter)">Run all</button>
+          <button id="restart" class="btn" title="Clear the R environment and history">Restart</button>
+          <button id="save-script" class="btn" title="Save the script as an .R file">Save</button>
+          <button id="open-script" class="btn" title="Open an .R file">Open</button>
+          <input type="file" id="open-file" accept=".R,.r,.txt" hidden>
         </div>
       </div>
       <div class="editor-wrap">
         <pre id="gutter" aria-hidden="true">1</pre>
         <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off"
-                  placeholder="# Write R code here, then press Run (Ctrl/Cmd+Enter)&#10;# Datasets you load from DHIS2 appear in the Environment panel.&#10;summary(df)&#10;hist(df$value, main = 'DHIS2 values', col = 'steelblue')"></textarea>
+                  placeholder="# Write R here, then press Run (Ctrl/Cmd+Enter).&#10;# Data you load from DHIS2 appears in the Environment tab.&#10;summary(df)&#10;plot(df$period, df$value, type = 'b')"></textarea>
+      </div>
+      <div class="pane-foot">
+        <label class="checkbox" title="Re run earlier code silently so objects stay available between runs">
+          <input type="checkbox" id="persist-env" checked> Keep environment between runs
+        </label>
       </div>
     </section>
 
-    <!-- Top-right: Environment / DHIS2 data -->
+    <!-- Vertical splitter -->
+    <div id="split-col" class="splitter splitter--col" title="Drag to resize"></div>
+
+    <!-- Right side tabs -->
     <section class="pane" id="pane-env">
       <div class="pane-head">
         <div class="tabs">
-          <button class="tab tab--active" data-tab="dhis">DHIS2 Data</button>
+          <button class="tab tab--active" data-tab="dhis">Data</button>
           <button class="tab" data-tab="env">Environment</button>
+          <button class="tab" data-tab="pkg">Packages</button>
+          <button class="tab" data-tab="hist">History</button>
         </div>
       </div>
 
       <!-- DHIS2 data browser -->
       <div class="pane-body tab-panel tab-panel--active" id="tab-dhis">
+        <div class="field-row">
+          <div class="field">
+            <label>Data type</label>
+            <select id="dx-type">
+              <option value="indicators">Indicators</option>
+              <option value="dataElements">Data elements</option>
+              <option value="programIndicators">Program indicators</option>
+              <option value="dataSets">Data sets (reporting rate)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Search</label>
+            <input type="text" id="dx-search" placeholder="Type to search the instance..." spellcheck="false">
+          </div>
+        </div>
         <div class="field">
           <label>Data items</label>
-          <select id="dx-select" multiple size="5"></select>
-          <small id="dx-hint" class="hint">Loading indicators from DHIS2&hellip;</small>
+          <select id="dx-select" multiple size="6"></select>
+          <small id="dx-hint" class="hint">Loading...</small>
         </div>
+
         <div class="field-row">
           <div class="field">
             <label>Period</label>
             <select id="pe-select">
               <option value="LAST_12_MONTHS">Last 12 months</option>
+              <option value="LAST_6_MONTHS">Last 6 months</option>
               <option value="THIS_YEAR">This year</option>
               <option value="LAST_YEAR">Last year</option>
               <option value="LAST_5_YEARS">Last 5 years</option>
+              <option value="LAST_12_WEEKS">Last 12 weeks</option>
               <option value="LAST_4_QUARTERS">Last 4 quarters</option>
             </select>
           </div>
           <div class="field">
-            <label>Organisation unit</label>
-            <select id="ou-select"></select>
+            <label>Custom periods</label>
+            <input type="text" id="pe-custom" placeholder="e.g. 2021;2022;2023" spellcheck="false">
           </div>
         </div>
+
+        <div class="field">
+          <label>Organisation units</label>
+          <div id="ou-tree" class="ou-tree">Loading...</div>
+          <small id="ou-selected" class="hint">None selected.</small>
+        </div>
+
         <div class="field-row">
+          <div class="field">
+            <label class="checkbox"><input type="checkbox" id="dx-disagg"> Include disaggregations</label>
+          </div>
           <div class="field">
             <label>R variable name</label>
             <input type="text" id="var-name" value="df" spellcheck="false">
           </div>
-          <div class="field field--btn">
-            <button id="fetch-data" class="btn btn--primary">Fetch &amp; Load into R</button>
-          </div>
         </div>
+        <div class="field">
+          <button id="fetch-data" class="btn btn--primary btn--block">Fetch and load into R</button>
+        </div>
+
+        <details class="advanced">
+          <summary>Advanced: load any API resource</summary>
+          <div class="field">
+            <label>API path</label>
+            <input type="text" id="raw-path" placeholder="/dataElements.json?paging=false" spellcheck="false">
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>R variable name</label>
+              <input type="text" id="raw-var" value="meta" spellcheck="false">
+            </div>
+            <div class="field field--btn">
+              <button id="raw-fetch" class="btn btn--block">Load JSON</button>
+            </div>
+          </div>
+          <small class="hint">Fetches any DHIS2 API endpoint and loads the JSON into R. Use this for data beyond analytics.</small>
+        </details>
+
         <div id="data-preview" class="data-preview">
-          <small class="hint">Select one or more data items and click <em>Fetch &amp; Load into R</em>. A preview appears here and the data becomes available to your R code.</small>
+          <small class="hint">Pick data items, periods and org units, then click Fetch and load into R.</small>
         </div>
       </div>
 
-      <!-- Loaded R objects -->
+      <!-- Environment -->
       <div class="pane-body tab-panel" id="tab-env">
-        <table class="env-table">
-          <thead><tr><th>Name</th><th>Type</th><th>Details</th></tr></thead>
+        <table class="grid-table">
+          <thead><tr><th>Name</th><th>Details</th><th>Actions</th></tr></thead>
           <tbody id="env-tbody">
-            <tr class="env-empty"><td colspan="3">No datasets loaded yet.</td></tr>
+            <tr class="empty-row"><td colspan="3">No data loaded yet.</td></tr>
           </tbody>
         </table>
       </div>
+
+      <!-- Packages -->
+      <div class="pane-body tab-panel" id="tab-pkg">
+        <div class="field-row">
+          <div class="field">
+            <label>Install a package</label>
+            <input type="text" id="pkg-install-name" placeholder="e.g. forecast" spellcheck="false">
+          </div>
+          <div class="field field--btn">
+            <button id="pkg-install" class="btn btn--primary btn--block">Install</button>
+          </div>
+        </div>
+        <small class="hint">Installing works only on your own OpenCPU server with internet access.</small>
+        <div class="field" style="margin-top:10px">
+          <label>Installed packages</label>
+          <input type="text" id="pkg-filter" placeholder="Filter...">
+          <small id="pkg-hint" class="hint">Open this tab to load the list.</small>
+        </div>
+        <div id="pkg-list" class="pkg-list"></div>
+      </div>
+
+      <!-- History -->
+      <div class="pane-body tab-panel" id="tab-hist">
+        <div class="hist-tools"><button id="clear-hist" class="btn">Clear history</button></div>
+        <div id="hist-list" class="hist-list">
+          <small class="hint">Code you run appears here. Click an entry to put it back in the editor.</small>
+        </div>
+      </div>
     </section>
 
-    <!-- Bottom-left: Console -->
+    <!-- Horizontal splitter -->
+    <div id="split-row" class="splitter splitter--row" title="Drag to resize"></div>
+
+    <!-- Console -->
     <section class="pane" id="pane-console">
       <div class="pane-head">
-        <span class="pane-title">Console</span>
+        <span class="pane-title">Console <span id="busy" class="busy hidden"></span></span>
         <div class="pane-tools">
+          <button id="download-console" class="btn">Download</button>
           <button id="clear-console" class="btn">Clear</button>
         </div>
       </div>
       <div class="pane-body console" id="console"></div>
     </section>
 
-    <!-- Bottom-right: Plots / Output -->
+    <!-- Plots -->
     <section class="pane" id="pane-plots">
       <div class="pane-head">
         <span class="pane-title">Plots</span>
-        <div class="pane-tools">
-          <button id="clear-plots" class="btn">Clear</button>
-        </div>
+        <div class="pane-tools"><button id="clear-plots" class="btn">Clear</button></div>
       </div>
       <div class="pane-body plots" id="plots">
-        <small class="hint">Plots produced by your R code (e.g. <code>plot()</code>, <code>hist()</code>, <code>ggplot()</code>) appear here.</small>
+        <small class="hint">Plots from your R code appear here.</small>
       </div>
     </section>
   </main>
 
   <footer id="statusbar">
-    <span id="dhis-status">Connecting to DHIS2&hellip;</span>
+    <span id="dhis-status">Connecting to DHIS2...</span>
     <span class="spacer"></span>
-    <span>Author: Shikhar Shukla</span>
+    <span>DHIS2 and OpenCPU</span>
   </footer>
+
+  <!-- Data viewer dialog -->
+  <div id="viewer" class="viewer hidden">
+    <div class="viewer-box">
+      <div class="viewer-head">
+        <span id="viewer-title">Data</span>
+        <div>
+          <button id="viewer-csv" class="btn">Download CSV</button>
+          <button id="viewer-close" class="btn">Close</button>
+        </div>
+      </div>
+      <div id="viewer-body" class="viewer-body"></div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toasts" class="toasts"></div>
 
   <script src="dhis2.js"></script>
   <script src="opencpu.js"></script>
