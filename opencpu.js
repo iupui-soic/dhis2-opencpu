@@ -1,81 +1,128 @@
 /*
- * opencpu.js — client for executing R code on an OpenCPU server.
+ * opencpu.js
+ * Client for an OpenCPU server: running R code, listing installed packages, and
+ * trying to install new ones.
  *
- * OpenCPU interprets POST form parameters as R expressions. We exploit that to
- * run arbitrary user code: the code (plus any DHIS2 data preamble) is
- * base64-encoded in the browser and decoded + sourced on the server. Using
- * base64 avoids fragile R/URL string escaping. `source(echo=TRUE,
- * print.eval=TRUE)` makes the captured console output read like an RStudio
- * console (commands echoed, values printed).
+ * Running code: OpenCPU reads POST form parameters as R expressions. The whole
+ * script is base64 encoded in the browser and decoded on the server, which
+ * avoids quoting problems. It is sourced with echo and print.eval on so the
+ * captured console reads like a normal R console.
  *
- * Docs: https://www.opencpu.org/api.html
+ * API reference: https://www.opencpu.org/api.html
  */
 window.OpenCPU = (function () {
-  // UTF-8 safe base64 encoding (btoa alone mishandles multibyte characters).
+  const TIMEOUT_MS = 120000;
+
+  // UTF-8 safe base64. Plain btoa does not handle multibyte characters.
   function toBase64(str) {
     const bytes = new TextEncoder().encode(str);
     let bin = '';
-    bytes.forEach((b) => { bin += String.fromCharCode(b); });
+    bytes.forEach(function (b) { bin += String.fromCharCode(b); });
     return btoa(bin);
   }
 
-  function trimSlash(url) {
-    return (url || '').trim().replace(/\/+$/, '');
-  }
+  function trimSlash(url) { return (url || '').trim().replace(/\/+$/, ''); }
 
   function originOf(baseUrl) {
     try { return new URL(baseUrl).origin; }
     catch (e) { return ''; }
   }
 
-  /** Quick connectivity check against the OpenCPU server. */
+  async function withTimeout(doFetch) {
+    const controller = new AbortController();
+    const timer = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
+    try {
+      return await doFetch(controller.signal);
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('OpenCPU request timed out.');
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Check the server is reachable.
   async function test(baseUrl) {
     const base = trimSlash(baseUrl);
     if (!base) throw new Error('No OpenCPU URL set.');
-    const res = await fetch(base + '/library/base/R/', { method: 'GET' });
-    if (!res.ok) throw new Error(`Server responded ${res.status}.`);
+    const res = await withTimeout(function (signal) {
+      return fetch(base + '/library/base/R/', { method: 'GET', signal: signal });
+    });
+    if (!res.ok) throw new Error('Server responded ' + res.status + '.');
     return true;
   }
 
-  /**
-   * Execute R code on OpenCPU.
-   * @param {string} baseUrl  e.g. https://cloud.opencpu.org/ocpu
-   * @param {string} code     full R script (preamble + user code)
-   * @returns {Promise<{ok, console, error, plots:string[], session}>}
-   */
+  // List packages installed on the server. GET /library/ returns one per line.
+  async function listPackages(baseUrl) {
+    const base = trimSlash(baseUrl);
+    if (!base) throw new Error('No OpenCPU URL set.');
+    const res = await withTimeout(function (signal) {
+      return fetch(base + '/library/', { method: 'GET', signal: signal });
+    });
+    if (!res.ok) throw new Error('Could not list packages (' + res.status + ').');
+    const text = await res.text();
+    return text.split('\n')
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; })
+      .sort();
+  }
+
+  // Try to install a package. Works only on servers that allow it (your own
+  // self hosted OpenCPU with internet). The public cloud server is read only.
+  async function installPackage(baseUrl, name) {
+    const base = trimSlash(baseUrl);
+    if (!base) throw new Error('No OpenCPU URL set.');
+    const pkg = (name || '').trim();
+    if (!pkg) throw new Error('Enter a package name.');
+    const body = 'pkgs=' + encodeURIComponent('"' + pkg + '"') +
+      '&repos=' + encodeURIComponent('"https://cloud.r-project.org"');
+    const res = await withTimeout(function (signal) {
+      return fetch(base + '/library/utils/R/install.packages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body,
+        signal: signal,
+      });
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(text.trim() || ('HTTP ' + res.status));
+    return text;
+  }
+
+  // R expression that decodes and sources a base64 encoded script.
+  function buildExpr(code) {
+    const b64 = toBase64(code);
+    return '{.src<-rawToChar(jsonlite::base64_dec("' + b64 + '"));' +
+      'source(textConnection(.src),echo=TRUE,print.eval=TRUE,' +
+      'max.deparse.length=1e5,spaced=FALSE);invisible(NULL)}';
+  }
+
+  // Run an R script. Returns console text and any plot image URLs.
   async function run(baseUrl, code) {
     const base = trimSlash(baseUrl);
     if (!base) throw new Error('No OpenCPU URL set. Enter one in the top bar.');
     const origin = originOf(base);
 
-    const b64 = toBase64(code);
-    // R expression evaluated by base::eval. Decodes the script and sources it
-    // so commands are echoed and values auto-printed into the console capture.
-    const expr =
-      '{.src<-rawToChar(jsonlite::base64_dec("' + b64 + '"));' +
-      'source(textConnection(.src),echo=TRUE,print.eval=TRUE,' +
-      'max.deparse.length=1e5,spaced=FALSE);invisible(NULL)}';
-
-    const body = 'expr=' + encodeURIComponent(expr);
-    const res = await fetch(base + '/library/base/R/eval', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
+    const body = 'expr=' + encodeURIComponent(buildExpr(code));
+    const res = await withTimeout(function (signal) {
+      return fetch(base + '/library/base/R/eval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body,
+        signal: signal,
+      });
     });
 
     const text = await res.text();
 
-    // Errors come back as 4xx with a plain-text R error message.
     if (!res.ok) {
       return { ok: false, console: '', error: text.trim() || ('HTTP ' + res.status), plots: [], session: null };
     }
 
-    // Success: body lists output resource paths for the new tmp session.
     const sessionMatch = text.match(/\/ocpu\/tmp\/([^/\s]+)\//);
     const session = sessionMatch ? sessionMatch[1] : null;
     const sessionPath = session ? '/ocpu/tmp/' + session : null;
 
-    // Console output (echoed commands + printed values).
     let consoleText = '';
     if (sessionPath) {
       try {
@@ -84,23 +131,27 @@ window.OpenCPU = (function () {
       } catch (e) { /* console may be empty */ }
     }
 
-    // Collect graphics: paths look like /ocpu/tmp/<key>/graphics/<n>
     const plots = [];
     if (sessionPath) {
-      const graphicsNums = [];
+      const seen = [];
       const re = /\/graphics\/(\d+)(?:\/|\b)/g;
       let m;
       while ((m = re.exec(text)) !== null) {
-        const n = m[1];
-        if (graphicsNums.indexOf(n) === -1) graphicsNums.push(n);
+        if (seen.indexOf(m[1]) === -1) seen.push(m[1]);
       }
-      graphicsNums.forEach((n) => {
-        plots.push(origin + sessionPath + '/graphics/' + n + '/png?width=900&height=600');
+      seen.forEach(function (n) {
+        plots.push(origin + sessionPath + '/graphics/' + n + '/png?width=1000&height=700');
       });
     }
 
-    return { ok: true, console: consoleText, error: '', plots, session };
+    return { ok: true, console: consoleText, error: '', plots: plots, session: session };
   }
 
-  return { test, run, toBase64 };
+  return {
+    test: test,
+    run: run,
+    listPackages: listPackages,
+    installPackage: installPackage,
+    toBase64: toBase64,
+  };
 })();
